@@ -5,10 +5,12 @@
 
 import re, time, json, logging, hashlib, base64, asyncio
 
+import markdown2
+
 from aiohttp import web
 
 from __init__ import get, post
-from errors import APIError,APIValueError, APIResourceNotFoundError,APIPermissionError
+from errors import APIError,APIValueError, APIResourceNotFoundError,APIPermissionError,Page
 
 from models import User, Comment, Blog, next_id
 from config import configs
@@ -19,6 +21,16 @@ _COOKIE_KEY = configs.session.secret
 def check_admin(request):
     if request.__user__ is None or not request.__user__.admin:
         raise APIPermissionError()
+
+def get_page_index(page_str):
+    p = 1
+    try:
+        p = int(page_str)
+    except ValueError as e:
+        pass
+    if p < 1:
+        p = 1
+    return p
 
 def user2cookie(user, max_age):
     '''
@@ -70,6 +82,19 @@ def index(request):
         '__template__': 'blogs.html',
         'blogs': blogs,
         'user': request.__user__
+    }
+
+@get('/blog/{id}')
+async def get_blog(id):
+    blog = await Blog.find(id)
+    comments = await Comment.findAll('blog_id=?', [id], orderBy='created_at desc')
+    for c in comments:
+        c.html_content = text2html(c.content)
+    blog.html_content = markdown2.markdown(blog.content)
+    return {
+        '__template__': 'blog.html',
+        'blog': blog,
+        'comments': comments
     }
 
 @get('/register')
@@ -156,6 +181,23 @@ async def api_register_user(*, email, name, passwd):
 async def api_get_blog(*, id):
     blog = await Blog.find(id)
     return blog
+
+@get('/api/blogs')
+async def api_blogs(*, page='1'):
+    page_index = get_page_index(page)
+    num = await Blog.findNumber('count(id)')
+    p = Page(num, page_index)
+    if num == 0:
+        return dict(page=p, blogs=())
+    blogs = await Blog.findAll(orderBy='created_at desc', limit=(p.offset, p.limit))
+    return dict(page=p, blogs=blogs)
+
+@get('/manage/blogs')
+def manage_blogs(*, page='1'):
+    return {
+        '__template__': 'manage_blogs.html',
+        'page_index': get_page_index(page)
+    }
 
 @post('/api/blogs')
 async def api_create_blog(request, *, name, summary, content):
